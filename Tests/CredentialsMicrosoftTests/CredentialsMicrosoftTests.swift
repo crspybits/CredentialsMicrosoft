@@ -4,9 +4,11 @@ import Kitura
 import KituraNet
 import Credentials
 import KituraSession
+import SwiftJWT
 
 struct MicrosoftPlist: Decodable {
-    let token: String
+    let token: String // their "accessToken"; not a JWT
+    let idToken: String // the Oauth2 JWT
 }
 
 final class CredentialsMicrosoftTests: XCTestCase {
@@ -14,24 +16,25 @@ final class CredentialsMicrosoftTests: XCTestCase {
     let credentials = Credentials()
     let microsoftCredentials = CredentialsMicrosoftToken(tokenTimeToLive: nil)
     let tokenTypeKey = "X-token-type"
-    let accessTokenKey = "access_token"
+    let realAccessTokenKey = "access_token"
+    let microsoftAccessTokenKey = "X-microsoft-access-token"
     let authTokenType = "MicrosoftToken"
-    let accessToken: String = CredentialsMicrosoftTests.getToken()
+    let tokens: MicrosoftPlist = CredentialsMicrosoftTests.getTokens()
     
-    static func getToken() -> String {
+    static func getTokens() -> MicrosoftPlist {
         // I know this is gross. Swift packages just don't have a good way to access resources right now. See https://stackoverflow.com/questions/47177036/use-resources-in-unit-tests-with-swift-package-manager
         let url = URL(fileURLWithPath: "/Users/chris/Desktop/Apps/SyncServerII/Private/CredentialsMicrosoft/token.plist")
         guard let data = try? Data(contentsOf: url) else {
-            fatalError("Coul not get data from url")
+            fatalError("Could not get data from url")
         }
 
         let decoder = PropertyListDecoder()
 
         guard let microsoftToken = try? decoder.decode(MicrosoftPlist.self, from: data) else {
-            fatalError("Coul not decode the plist")
+            fatalError("Could not decode the plist")
         }
 
-        return microsoftToken.token
+        return microsoftToken
     }
     
     override func setUp() {
@@ -71,7 +74,7 @@ final class CredentialsMicrosoftTests: XCTestCase {
     
     func testRequestFailsWithBadAuthHeader() {
         let headers: [String: String] = [
-            accessTokenKey: "foo",
+            microsoftAccessTokenKey: "foo",
             tokenTypeKey: authTokenType
         ]
         
@@ -89,8 +92,9 @@ final class CredentialsMicrosoftTests: XCTestCase {
     
     func testRequestSucceedsWithValidAuthHeader() {
         let headers: [String: String] = [
-            accessTokenKey: accessToken,
-            tokenTypeKey: authTokenType
+            microsoftAccessTokenKey: tokens.token,
+            tokenTypeKey: authTokenType,
+            realAccessTokenKey: tokens.idToken
         ]
         
         performServerTest(router: router) { expectation in
@@ -113,7 +117,7 @@ final class CredentialsMicrosoftTests: XCTestCase {
         requestOptions.append(.path("/v1.0/me"))
 
         var headers = [String:String]()
-        headers["Authorization"] = "Bearer \(accessToken)"
+        headers["Authorization"] = "Bearer \(tokens.token)"
         requestOptions.append(.headers(headers))
 
         let expectation = self.expectation(0)
@@ -143,7 +147,13 @@ final class CredentialsMicrosoftTests: XCTestCase {
     
     func testCredentialsDirectly() {
         let expectation = self.expectation(0)
-        microsoftCredentials.doRequest(token: accessToken, options: [:], onSuccess: { userProfile in
+        
+        guard let userIdentifer = MicrosoftClaims.getUserIdentifier(idToken: tokens.idToken) else {
+            XCTFail()
+            return
+        }
+        
+        microsoftCredentials.doRequest(token: tokens.token, expectedUserIdentifier: userIdentifer, options: [:], onSuccess: { userProfile in
             expectation.fulfill()
         }, onFailure: { httpStatus in
             XCTFail("httpStatus: \(String(describing: httpStatus))")
@@ -157,7 +167,7 @@ final class CredentialsMicrosoftTests: XCTestCase {
     // second handler is instead invoked.
     func testMissingTokenType() {
         let headers: [String: String] = [
-            accessTokenKey: accessToken,
+            microsoftAccessTokenKey: tokens.token,
         ]
         
         performServerTest(router: router) { expectation in

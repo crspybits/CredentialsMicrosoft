@@ -4,7 +4,8 @@ import Kitura
 import KituraNet
 import LoggerAPI
 import Credentials
-
+import HeliumLogger
+import SwiftJWT
 import Foundation
 
 /// Protocol to make it easier to add token TLL to credentials plugins.
@@ -79,6 +80,14 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
     /// User profile cache.
     public var usersCache: NSCache<NSString, BaseCacheElement>?
     
+    private let tokenTypeKey = "X-token-type"
+    
+    // What iOS MSAL calls the idToken; a OAuth2 JWT token.
+    private let accessTokenKey = "access_token"
+    
+    // What iOS MSAL calls the accessToken
+    private let microsoftAccessTokenKey = "X-microsoft-access-token"
+    
     /// Authenticate incoming request using Microsoft OAuth2 token.
     ///
     /// - Parameter request: The `RouterRequest` object used to get information
@@ -97,23 +106,38 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
                              onFailure: @escaping (HTTPStatusCode?, [String:String]?) -> Void,
                              onPass: @escaping (HTTPStatusCode?, [String:String]?) -> Void,
                              inProgress: @escaping () -> Void) {
-        if let type = request.headers["X-token-type"], type == name {
-            if let token = request.headers["access_token"] {
-                if useTokenInCache(token: token, onSuccess: onSuccess) {
-                    return
-                }
-                
-                doRequest(token: token, options: options, onSuccess: onSuccess, onFailure: { _ in
-                    onFailure(nil, nil)
-                })
-            }
-            else {
-                onFailure(nil, nil)
-            }
-        }
-        else {
+        
+        // For token type differences, see https://github.com/AzureAD/microsoft-authentication-library-for-objc/issues/683
+
+        guard let type = request.headers[tokenTypeKey], type == name else {
             onPass(nil, nil)
+            return
         }
+        
+        // The microsoftAccessTokenKey token is needed for authentication.
+        guard let token = request.headers[microsoftAccessTokenKey] else {
+            onFailure(nil, nil)
+            return
+        }
+        
+        // The accessTokenKey token is needed for further server API access
+        guard let accessToken = request.headers[accessTokenKey] else {
+            onFailure(nil, nil)
+            return
+        }
+
+        guard let userIdentifier = MicrosoftClaims.getUserIdentifier(idToken: accessToken) else {
+            onFailure(nil, nil)
+            return
+        }
+        
+        if useTokenInCache(token: token, onSuccess: onSuccess) {
+            return
+        }
+        
+        doRequest(token: token, expectedUserIdentifier: userIdentifier, options: options, onSuccess: onSuccess, onFailure: { _ in
+            onFailure(nil, nil)
+        })
     }
     
     enum FailureResult: Swift.Error {
@@ -123,7 +147,7 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
         case failedCreatingProfile
     }
     
-    func doRequest(token: String, options: [String:Any],
+    func doRequest(token: String, expectedUserIdentifier: String, options: [String:Any],
         onSuccess: @escaping (UserProfile) -> Void,
         onFailure: @escaping (Swift.Error) -> Void) {
        // See https://docs.microsoft.com/en-us/graph/api/user-get?view=graph-rest-1.0&tabs=http
@@ -159,6 +183,13 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
             
                 guard let userProfile = createUserProfile(from: dictionary, for: self.name) else {
                     Log.error("Failed to create user profile")
+                    onFailure(FailureResult.failedCreatingProfile)
+                    return
+                }
+                
+                // Need to make sure the two tokens refer to the same user
+                guard expectedUserIdentifier == userProfile.id else {
+                    Log.error("Expected identifier wasn't the same as the profile identifier")
                     onFailure(FailureResult.failedCreatingProfile)
                     return
                 }
