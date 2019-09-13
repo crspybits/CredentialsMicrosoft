@@ -168,6 +168,7 @@ final class CredentialsMicrosoftTests: XCTestCase {
     func testMissingTokenType() {
         let headers: [String: String] = [
             microsoftAccessTokenKey: tokens.token,
+            realAccessTokenKey: tokens.idToken
         ]
         
         performServerTest(router: router) { expectation in
@@ -187,7 +188,8 @@ final class CredentialsMicrosoftTests: XCTestCase {
     // fails authentication and returns unauthorized.
     func testMissingAccessToken() {
         let headers: [String: String] = [
-            tokenTypeKey: authTokenType
+            tokenTypeKey: authTokenType,
+            realAccessTokenKey: tokens.idToken
         ]
         
         performServerTest(router: router) { expectation in

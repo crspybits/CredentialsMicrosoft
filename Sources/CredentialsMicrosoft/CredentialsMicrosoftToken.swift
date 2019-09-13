@@ -7,6 +7,7 @@ import Credentials
 import HeliumLogger
 import SwiftJWT
 import Foundation
+import LoggerAPI
 
 /// Protocol to make it easier to add token TLL to credentials plugins.
 public protocol CredentialsTokenTLL {
@@ -86,6 +87,7 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
     private let accessTokenKey = "access_token"
     
     // What iOS MSAL calls the accessToken
+    // See https://docs.microsoft.com/en-us/azure/active-directory/develop/id-tokens
     private let microsoftAccessTokenKey = "X-microsoft-access-token"
     
     /// Authenticate incoming request using Microsoft OAuth2 token.
@@ -145,6 +147,7 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
         case statusCode(HTTPStatusCode)
         case failedSerialization
         case failedCreatingProfile
+        case failedGettingBodyData
     }
     
     func doRequest(token: String, expectedUserIdentifier: String, options: [String:Any],
@@ -163,55 +166,64 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
         requestOptions.append(.headers(headers))
 
         let req = HTTP.request(requestOptions) { response in
-            guard let response = response, response.statusCode == HTTPStatusCode.OK else {
+            guard let response = response else {
                 onFailure(FailureResult.badResponse)
                 return
             }
             
+            var body = Data()
             do {
-                var body = Data()
                 try response.readAllData(into: &body)
-                
-                let stringBody = String(data: body, encoding: .utf8)
-                print("stringBody: \(String(describing: stringBody))")
-                
-                guard let dictionary = try JSONSerialization.jsonObject(with: body, options: []) as? [String : Any] else {
-                    Log.error("Failed to serialize body data")
-                    onFailure(FailureResult.failedSerialization)
-                    return
-                }
-            
-                guard let userProfile = createUserProfile(from: dictionary, for: self.name) else {
-                    Log.error("Failed to create user profile")
-                    onFailure(FailureResult.failedCreatingProfile)
-                    return
-                }
-                
-                // Need to make sure the two tokens refer to the same user
-                guard expectedUserIdentifier == userProfile.id else {
-                    Log.error("Expected identifier wasn't the same as the profile identifier")
-                    onFailure(FailureResult.failedCreatingProfile)
-                    return
-                }
-            
-                if let delegate = self.delegate ?? options[CredentialsMicrosoftOptions.userProfileDelegate] as? UserProfileDelegate {
-                    delegate.update(userProfile: userProfile, from: dictionary)
-                }
-
-                let newCacheElement = BaseCacheElement(profile: userProfile)
-                #if os(Linux)
-                    let key = NSString(string: token)
-                #else
-                    let key = token as NSString
-                #endif
-                
-                self.usersCache!.setObject(newCacheElement, forKey: key)
-                onSuccess(userProfile)
-                
-            } catch {
-                Log.error("Failed to read Microsoft response")
-                onFailure(FailureResult.statusCode(response.statusCode))
+            } catch let error {
+                Log.debug("\(error)")
+                onFailure(FailureResult.failedGettingBodyData)
+                return
             }
+            
+            guard let stringBody = String(data: body, encoding: .utf8) else {
+                onFailure(FailureResult.failedGettingBodyData)
+                return
+            }
+            
+            Log.debug("stringBody: \(String(describing: stringBody))")
+            
+            guard response.statusCode == HTTPStatusCode.OK else {
+                onFailure(FailureResult.statusCode(response.statusCode))
+                return
+            }
+
+            guard let dictionary = try? JSONSerialization.jsonObject(with: body, options: []) as? [String : Any] else {
+                Log.error("Failed to serialize body data")
+                onFailure(FailureResult.failedSerialization)
+                return
+            }
+            
+            guard let userProfile = createUserProfile(from: dictionary, for: self.name) else {
+                Log.error("Failed to create user profile")
+                onFailure(FailureResult.failedCreatingProfile)
+                return
+            }
+            
+            // Need to make sure the two tokens refer to the same user
+            guard expectedUserIdentifier == userProfile.id else {
+                Log.error("Expected identifier wasn't the same as the profile identifier")
+                onFailure(FailureResult.failedCreatingProfile)
+                return
+            }
+        
+            if let delegate = self.delegate ?? options[CredentialsMicrosoftOptions.userProfileDelegate] as? UserProfileDelegate {
+                delegate.update(userProfile: userProfile, from: dictionary)
+            }
+
+            let newCacheElement = BaseCacheElement(profile: userProfile)
+            #if os(Linux)
+                let key = NSString(string: token)
+            #else
+                let key = token as NSString
+            #endif
+            
+            self.usersCache!.setObject(newCacheElement, forKey: key)
+            onSuccess(userProfile)
         }
         
         print("URL: \(req.url)")
