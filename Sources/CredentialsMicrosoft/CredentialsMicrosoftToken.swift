@@ -110,7 +110,7 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
                              inProgress: @escaping () -> Void) {
         
         // For token type differences, see https://github.com/AzureAD/microsoft-authentication-library-for-objc/issues/683
-
+        // My question seems related to https://github.com/AzureAD/azure-activedirectory-library-for-js/issues/693
         guard let type = request.headers[tokenTypeKey], type == name else {
             onPass(nil, nil)
             return
