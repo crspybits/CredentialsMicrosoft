@@ -226,7 +226,7 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
             onSuccess(userProfile)
         }
         
-        print("URL: \(req.url)")
+        // print("URL: \(req.url)")
         req.end()
     }
 }
