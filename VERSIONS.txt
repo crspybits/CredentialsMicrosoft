@@ -1,0 +1,4 @@
+CredentialsMicrosoft
+	
+Version 0.1.0 (9/22/19)
+	* Initial release
