@@ -9,46 +9,9 @@ import SwiftJWT
 import Foundation
 import LoggerAPI
 
-/// Protocol to make it easier to add token TLL to credentials plugins.
-public protocol CredentialsTokenTLL {
-    var usersCache: NSCache<NSString, BaseCacheElement>? {get}
-    var tokenTimeToLive: TimeInterval? {get}
-}
-
-extension CredentialsTokenTLL {
-    /// Returns true iff the token/UserProfile was found in the cache and onSuccess was called.
-    ///
-    /// - Parameter token: The Oauth2 token, used as a key in the cache.
-    /// - Parameter onSuccess: The callback used in the authenticate method.
-    ///
-    func useTokenInCache(token: String, onSuccess: @escaping (UserProfile) -> Void) -> Bool {
-        #if os(Linux)
-            let key = NSString(string: token)
-        #else
-            let key = token as NSString
-        #endif
-        
-        if let cached = usersCache?.object(forKey: key) {
-            if let ttl = tokenTimeToLive {
-                if Date() < cached.createdAt.addingTimeInterval(ttl) {
-                    onSuccess(cached.userProfile)
-                    return true
-                }
-                // If current time is later than time to live, continue to standard token authentication.
-                // Don't need to evict token, since it will replaced if the token is successfully autheticated.
-            } else {
-                // No time to live set, use token until it is evicted from the cache
-                onSuccess(cached.userProfile)
-                return true
-            }
-        }
-        
-        return false
-    }
-}
-
 /// Authentication using Microsoft OAuth2 token.
-public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTokenTLL {
+public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTokenTTL {
+
     /// The name of the plugin.
     public var name: String {
         return "MicrosoftToken"
@@ -90,6 +53,8 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
     // See https://docs.microsoft.com/en-us/azure/active-directory/develop/id-tokens
     private let microsoftAccessTokenKey = "X-microsoft-access-token"
     
+    private var expectedUserIdentifier: String!
+    
     /// Authenticate incoming request using Microsoft OAuth2 token.
     ///
     /// - Parameter request: The `RouterRequest` object used to get information
@@ -109,8 +74,9 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
                              onPass: @escaping (HTTPStatusCode?, [String:String]?) -> Void,
                              inProgress: @escaping () -> Void) {
         
-        // For token type differences, see https://github.com/AzureAD/microsoft-authentication-library-for-objc/issues/683
-        // My question seems related to https://github.com/AzureAD/azure-activedirectory-library-for-js/issues/693
+        // For token type differences, see (https://github.com/AzureAD/microsoft-authentication-library-for-objc/issues/683)
+        // My question seems related to (https://github.com/AzureAD/azure-activedirectory-library-for-js/issues/693)
+        
         guard let type = request.headers[tokenTypeKey], type == name else {
             onPass(nil, nil)
             return
@@ -128,18 +94,14 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
             return
         }
 
-        guard let userIdentifier = MicrosoftClaims.getUserIdentifier(idToken: accessToken) else {
+        expectedUserIdentifier = MicrosoftClaims.getUserIdentifier(idToken: accessToken)
+        
+        if expectedUserIdentifier == nil  {
             onFailure(nil, nil)
             return
         }
-        
-        if useTokenInCache(token: token, onSuccess: onSuccess) {
-            return
-        }
-        
-        doRequest(token: token, expectedUserIdentifier: userIdentifier, options: options, onSuccess: onSuccess, onFailure: { _ in
-            onFailure(nil, nil)
-        })
+
+        getProfileAndCacheIfNeeded(token: token, options: options, onSuccess: onSuccess, onFailure: onFailure)
     }
     
     enum FailureResult: Swift.Error {
@@ -148,13 +110,12 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
         case failedSerialization
         case failedCreatingProfile
         case failedGettingBodyData
+        case couldNotGetSelf
     }
     
-    func doRequest(token: String, expectedUserIdentifier: String, options: [String:Any],
-        onSuccess: @escaping (UserProfile) -> Void,
-        onFailure: @escaping (Swift.Error) -> Void) {
-       // See https://docs.microsoft.com/en-us/graph/api/user-get?view=graph-rest-1.0&tabs=http
-
+    // This method is called by getProfileAndCacheIfNeeded, when needed.
+    public func generateNewProfile(token: String, options: [String : Any], completion: @escaping (CredentialsTokenTTLResult) -> Void) {
+        // See https://docs.microsoft.com/en-us/graph/api/user-get?view=graph-rest-1.0&tabs=http
         var requestOptions: [ClientRequest.Options] = []
         requestOptions.append(.schema("https://"))
         requestOptions.append(.hostname("graph.microsoft.com"))
@@ -165,9 +126,14 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
         headers["Authorization"] = "Bearer \(token)"
         requestOptions.append(.headers(headers))
 
-        let req = HTTP.request(requestOptions) { response in
+        let req = HTTP.request(requestOptions) {[weak self] response in
+            guard let self = self else {
+                completion(.error(FailureResult.couldNotGetSelf))
+                return
+            }
+
             guard let response = response else {
-                onFailure(FailureResult.badResponse)
+                completion(.error(FailureResult.badResponse))
                 return
             }
             
@@ -176,38 +142,38 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
                 try response.readAllData(into: &body)
             } catch let error {
                 Log.debug("\(error)")
-                onFailure(FailureResult.failedGettingBodyData)
+                completion(.error(FailureResult.failedGettingBodyData))
                 return
             }
             
             guard let stringBody = String(data: body, encoding: .utf8) else {
-                onFailure(FailureResult.failedGettingBodyData)
+                completion(.error(FailureResult.failedGettingBodyData))
                 return
             }
             
             Log.debug("stringBody: \(String(describing: stringBody))")
             
             guard response.statusCode == HTTPStatusCode.OK else {
-                onFailure(FailureResult.statusCode(response.statusCode))
+                completion(.error(FailureResult.statusCode(response.statusCode)))
                 return
             }
 
             guard let dictionary = try? JSONSerialization.jsonObject(with: body, options: []) as? [String : Any] else {
                 Log.error("Failed to serialize body data")
-                onFailure(FailureResult.failedSerialization)
+                completion(.error(FailureResult.failedSerialization))
                 return
             }
             
             guard let userProfile = createUserProfile(from: dictionary, for: self.name) else {
                 Log.error("Failed to create user profile")
-                onFailure(FailureResult.failedCreatingProfile)
+                completion(.error(FailureResult.failedCreatingProfile))
                 return
             }
             
             // Need to make sure the two tokens refer to the same user
-            guard expectedUserIdentifier == userProfile.id else {
+            guard self.expectedUserIdentifier == userProfile.id else {
                 Log.error("Expected identifier wasn't the same as the profile identifier")
-                onFailure(FailureResult.failedCreatingProfile)
+                completion(.error(FailureResult.failedCreatingProfile))
                 return
             }
         
@@ -215,15 +181,7 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
                 delegate.update(userProfile: userProfile, from: dictionary)
             }
 
-            let newCacheElement = BaseCacheElement(profile: userProfile)
-            #if os(Linux)
-                let key = NSString(string: token)
-            #else
-                let key = token as NSString
-            #endif
-            
-            self.usersCache!.setObject(newCacheElement, forKey: key)
-            onSuccess(userProfile)
+            completion(.success(userProfile))
         }
         
         // print("URL: \(req.url)")
