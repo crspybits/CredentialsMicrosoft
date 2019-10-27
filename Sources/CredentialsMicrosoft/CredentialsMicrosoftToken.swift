@@ -53,7 +53,8 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
     // See https://docs.microsoft.com/en-us/azure/active-directory/develop/id-tokens
     private let microsoftAccessTokenKey = "X-microsoft-access-token"
     
-    private var expectedUserIdentifier: String!
+    // Not private to allow for unit tests.
+    var expectedUserIdentifier: String!
     
     /// Authenticate incoming request using Microsoft OAuth2 token.
     ///
@@ -109,6 +110,7 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
         case statusCode(HTTPStatusCode)
         case failedSerialization
         case failedCreatingProfile
+        case expectedIdentifierWasNotObtained(String)
         case failedGettingBodyData
         case couldNotGetSelf
     }
@@ -173,7 +175,8 @@ public class CredentialsMicrosoftToken: CredentialsPluginProtocol, CredentialsTo
             // Need to make sure the two tokens refer to the same user
             guard self.expectedUserIdentifier == userProfile.id else {
                 Log.error("Expected identifier wasn't the same as the profile identifier")
-                completion(.error(FailureResult.failedCreatingProfile))
+                completion(.error(FailureResult.expectedIdentifierWasNotObtained(
+                    "Expected: \(String(describing: self.expectedUserIdentifier)); Obtained: \(userProfile.id)")))
                 return
             }
         

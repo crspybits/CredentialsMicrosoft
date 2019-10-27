@@ -11,7 +11,10 @@ struct MicrosoftPlist: Decodable {
     let idToken: String // the Oauth2 JWT
 }
 
+// In order to run these tests, you need to update plistFile with current token and idToken values. I've been getting these values from an iOS demo app -- SMMicrosoftSignIn, which so far (as of 10/27/19) runs only on iOS 12.
+
 final class CredentialsMicrosoftTests: XCTestCase {
+    static let plistFile = "/Users/chris/Desktop/Apps/SyncServerII/Private/CredentialsMicrosoft/token.plist"
     var router:Router!
     let credentials = Credentials()
     let microsoftCredentials = CredentialsMicrosoftToken(tokenTimeToLive: nil)
@@ -22,8 +25,8 @@ final class CredentialsMicrosoftTests: XCTestCase {
     let tokens: MicrosoftPlist = CredentialsMicrosoftTests.getTokens()
     
     static func getTokens() -> MicrosoftPlist {
-        // I know this is gross. Swift packages just don't have a good way to access resources right now. See https://stackoverflow.com/questions/47177036/use-resources-in-unit-tests-with-swift-package-manager
-        let url = URL(fileURLWithPath: "/Users/chris/Desktop/Apps/SyncServerII/Private/CredentialsMicrosoft/token.plist")
+        // I know this is gross. Swift packages just don't have a good way to access resources right now. See (https://stackoverflow.com/questions/47177036/use-resources-in-unit-tests-with-swift-package-manager)
+        let url = URL(fileURLWithPath: CredentialsMicrosoftTests.plistFile)
         guard let data = try? Data(contentsOf: url) else {
             fatalError("Could not get data from url")
         }
@@ -148,17 +151,26 @@ final class CredentialsMicrosoftTests: XCTestCase {
     func testCredentialsDirectly() {
         let expectation = self.expectation(0)
         
-        guard let userIdentifer = MicrosoftClaims.getUserIdentifier(idToken: tokens.idToken) else {
+        microsoftCredentials.expectedUserIdentifier = MicrosoftClaims.getUserIdentifier(idToken: tokens.idToken)
+        
+        if microsoftCredentials.expectedUserIdentifier == nil {
             XCTFail()
             return
         }
         
-        microsoftCredentials.doRequest(token: tokens.token, expectedUserIdentifier: userIdentifer, options: [:], onSuccess: { userProfile in
+        microsoftCredentials.generateNewProfile(token: tokens.token, options:[:]) { result in
+            switch result {
+            case .success(let userProfile):
+                XCTAssert(userProfile.id == self.microsoftCredentials.expectedUserIdentifier)
+            case .unprocessable:
+                XCTFail()
+            case .failure:
+                XCTFail()
+            }
+            
             expectation.fulfill()
-        }, onFailure: { httpStatus in
-            XCTFail("httpStatus: \(String(describing: httpStatus))")
-            expectation.fulfill()
-        })
+        }
+        
         waitForExpectations(timeout: 10, handler: nil)
     }
 
