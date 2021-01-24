@@ -47,6 +47,15 @@
         }
       },
       {
+        "package": "Kitura-Session",
+        "repositoryURL": "https://github.com/IBM-Swift/Kitura-Session.git",
+        "state": {
+          "branch": null,
+          "revision": "b7c3476e588c8902f067ea89b87db65f242401b4",
+          "version": "3.3.4"
+        }
+      },
+      {
         "package": "KituraContracts",
         "repositoryURL": "https://github.com/IBM-Swift/KituraContracts.git",
         "state": {
