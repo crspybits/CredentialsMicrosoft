@@ -1,5 +1,8 @@
 CredentialsMicrosoft
 
+Version 0.2.1 (1/23/21)
+	* Fix package manifest issue.
+	
 Version 0.2.0 (1/23/21)
 	* Server beta testing
 	
