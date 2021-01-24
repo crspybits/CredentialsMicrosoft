@@ -1,4 +1,7 @@
 CredentialsMicrosoft
+
+Version 0.2.0 (1/23/21)
+	* Server beta testing
 	
 Version 0.1.0 (9/22/19)
 	* Initial release
